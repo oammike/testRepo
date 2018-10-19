@@ -1,0 +1,466 @@
+
+
+
+else
+                        {
+                            //**************************************************************
+                            //       SHIFTING SCHED
+                            //**************************************************************
+                             $schedForToday = $monthlySched->where('isRD',0)->where('productionDate',$payday)->first();
+                             $nextDay = Carbon::parse($payday)->addDay();
+                             $bioForTomorrow = Biometrics::where('productionDate',$nextDay->format('Y-m-d'))->first();// $monthlySched->where('isRD',0)->where('productionDate',$nextDay->format('Y-m-d'))->first();
+                             
+                              
+                              $UT = 0;
+                              
+                              //---------------------------------- Check if RD nya today
+                              $rd = $monthlySched->where('isRD',1)->where('productionDate',$payday)->first();  
+                              if (empty($rd)) 
+                                $isRDToday=false; else $isRDToday=true;
+                             
+                              if ($isRDToday)
+                              {
+                                if($sameDayLog)
+                                {
+                                    $data = $this->getRDinfo($id, $bioForTheDay,true,$payday);
+                                    $myDTR->push(['productionDate'=> date('M d, Y', strtotime($payday)),
+                                       'day'=> date('D',strtotime($payday)),
+                                       'shiftStart'=> $data[0]['shiftStart'],
+                                       'shiftEnd'=>$data[0]['shiftEnd'],
+                                       'logIN' => $data[0]['logIN'],
+                                       'logOUT'=>$data[0]['logOUT'],
+                                       'workedHours'=> $data[0]['workedHours'],
+                                       'billableForOT' => $data[0]['billableForOT'],
+                                       'UT'=>$data[0]['UT'],
+                                       'approvedOT' => $data[0]['approvedOT']]);
+
+                                }
+                                else //NOT SAMEDAY LOGOUT
+                                {
+                                   $data = $this->getRDinfo($id, $bioForTheDay,false,$payday);
+                                   $myDTR->push(['productionDate'=> date('M d, Y', strtotime($payday)),
+                                       'day'=> date('D',strtotime($payday)),
+                                       'shiftStart'=> $data[0]['shiftStart'],
+                                       'shiftEnd'=>$data[0]['shiftEnd'],
+                                       'logIN' => $data[0]['logIN'],
+                                       'logOUT'=>$data[0]['logOUT']."<br/><small>".$bioForTomorrow->productionDate."</small>",
+                                       'workedHours'=> $data[0]['workedHours'],
+                                       'billableForOT' => $data[0]['billableForOT'],
+                                       'UT'=>$data[0]['UT'],
+                                       'approvedOT' => $data[0]['approvedOT']]);
+
+                                }//end RD not SAME DAY LOG
+
+                                  
+
+
+                              }//end if isRDToday
+                              else  // --------------------------  it's not RD, its a WORKDAY
+                              {
+                                
+                                      $schedForToday = $monthlySched->where('productionDate',$payday)->first();
+
+
+
+                                    //---------------------------
+                                    // if shift  is between 3am-2:59PM, yung logs nya eh within the day
+                                    if ( ( $schedForToday->timeStart >= date('H:i:s',strtotime('03:00:00')) ) && ($schedForToday->timeStart <= date('H:i:s',strtotime('14:59:00'))) )
+                                    {
+                                      $sameDayLog = true;
+                                    } else $sameDayLog=false;
+
+
+
+                                  if ($sameDayLog)
+                                  {
+                                      $shiftStart = date('h:i A',strtotime($schedForToday['timeStart']));
+                                      $shiftEnd = date('h:i A',strtotime($schedForToday['timeEnd']));
+
+
+
+                                      //*************** TRAIT *******************
+                                      // getLogDetails ( dayType[RD|work] , user_id, biometrics_id, logType, $schedForToday)
+                                      // returns =>  $data->push(['logs'=>$userLog, 'UT'=>$UT, 'logTxt'=>$log, 'timing'=>$timing]);
+                                      $userLogIN = $this->getLogDetails('WORK', $id, $bioForTheDay->id, 1, $schedForToday, $UT);
+                                      $userLogOUT = $this->getLogDetails('WORK', $id, $bioForTheDay->id, 2, $schedForToday,0); //$userLogIN[0]['UT']
+
+                                      $coll->push(['payday'=>date('M d, Y', strtotime($payday)), 'userLogIN'=>$userLogIN, 'userLogOUT'=>$userLogOUT]);
+
+                                       //*********** APPLICABLE ONLY TO WORK DAY ********************//
+                                      //$workedHours = 
+
+                                      if (!is_null($userLogIN[0]['logs']) && !is_null($userLogOUT[0]['logs']))
+                                      {
+                                        //---- To get the right Worked Hours, check kung early pasok == get schedule Time
+                                        //---- if late pumasok, get user timeIN
+
+
+                                        //************ CHECK FOR LATEIN AND EARLY OUT ***************//
+
+                                        $isLateIN = $this->checkIfUndertime('IN', $userLogIN[0]['timing']->format('H:i:s'), $schedForToday['timeStart']);
+                                        $isEarlyOUT = $this->checkIfUndertime('OUT',$userLogOUT[0]['timing']->format('H:i:s'),$schedForToday['timeEnd'] );
+
+                                        //$coll->push(['lateIn'=>$isLateIN, 'user'=>$userLogIN[0]['timing']->format('H:i:s'), 'sched'=> $schedForToday['timeStart'],
+                                        //  'lateOUT'=>$isEarlyOUT, 'user2'=>$userLogOUT[0]['timing']->format('H:i:s'), 'sched2'=> $schedForToday['timeEnd'] ]);
+
+                                        if ($isEarlyOUT && $isLateIN)//use user's logs
+                                        {
+
+                                          $wh = Carbon::parse($userLogOUT[0]['timing'])->diffInMinutes(Carbon::parse($userLogIN[0]['timing'])->addHour());
+                                          $workedHours = number_format($wh/60,2);
+                                          $billableForOT=0;
+                                          
+
+                                        }
+                                        else if ($isEarlyOUT){
+                                          $wh = Carbon::parse($userLogOUT[0]['timing'])->diffInMinutes(Carbon::parse($schedForToday['timeStart'])->addHour());
+                                          $workedHours = number_format($wh/60,2)."<br/><small>(early OUT)</small>";$billableForOT=0;
+                                        }
+                                        else if ($isLateIN){
+                                          $wh = Carbon::parse($userLogOUT[0]['timing'])->diffInMinutes(Carbon::parse($userLogIN[0]['timing'])->addHour());
+                                          $workedHours = number_format($wh/60,2)."<br/><small>(Late IN)</small>";$billableForOT=0;
+                                        }
+                                        else {
+
+                                           $wh = Carbon::parse($userLogOUT[0]['timing'])->diffInMinutes(Carbon::parse($schedForToday['timeStart'])->addHour());
+
+                                          if ($wh > 480){ $workedHours = 8.0; $billableForOT = number_format((Carbon::parse($shiftEnd)->diffInMinutes(Carbon::parse($userLogOUT[0]['timing']) ))/60,2);  }
+                                          else { $workedHours = number_format($wh/60,2)."else"; }
+                                          
+
+                                        }
+
+
+                                      
+
+                                        
+
+                                        
+
+                                        //$coll->push(['wh'=>$wh, 'timeStart'=>$schedForToday['timeStart'], 'end'=>$userLogOUT[0]['timing'], 'logsIN'=>$userLogIN[0]['logs'] ]);
+                                      } 
+                                      else
+                                      {
+                                        $workedHours = "<strong class=\"text-danger\">AWOL</strong>";
+                                      }
+                                      //*********** APPLICABLE ONLY TO WORK DAY ********************//
+
+
+                                  } //--- end sameDayLog
+                                  else
+                                  {
+
+                                      $shiftStart = date('h:i A',strtotime($schedForToday['timeStart']));
+                                      $shiftEnd = date('h:i A',strtotime($schedForToday['timeEnd']));
+
+
+
+                                      //*************** TRAIT *******************
+                                      // getLogDetails ( dayType[RD|work] , user_id, biometrics_id, logType, $schedForToday)
+                                      // returns =>  $data->push(['logs'=>$userLog, 'UT'=>$UT, 'logTxt'=>$log, 'timing'=>$timing]);
+                                      $userLogIN = $this->getLogDetails('WORK', $id, $bioForTheDay->id, 1, $schedForToday, $UT);
+                                      //--- NEXT DAY LOG OUT
+                                      
+                                      $userLogOUT = $this->getLogDetails('WORK', $id, $bioForTomorrow->id, 2, $schedForToday,0); //$userLogIN[0]['UT']
+
+                                      $coll->push(['payday'=>date('M d, Y', strtotime($payday)), 'userLogIN'=>$userLogIN, 'userLogOUT'=>$userLogOUT]);
+
+                                       //*********** APPLICABLE ONLY TO WORK DAY ********************//
+                                      //$workedHours = 
+
+                                      if (!is_null($userLogIN[0]['logs']) && !is_null($userLogOUT[0]['logs']))
+                                      {
+                                        //---- To get the right Worked Hours, check kung early pasok == get schedule Time
+                                        //---- if late pumasok, get user timeIN
+
+
+                                        //************ CHECK FOR LATEIN AND EARLY OUT ***************//
+
+                                        $isLateIN = $this->checkIfUndertime('IN', $userLogIN[0]['timing']->format('H:i:s'), $schedForToday['timeStart']);
+                                        $isEarlyOUT = $this->checkIfUndertime('OUT',$userLogOUT[0]['timing']->format('H:i:s'),$schedForToday['timeEnd'] );
+
+                                        //$coll->push(['lateIn'=>$isLateIN, 'user'=>$userLogIN[0]['timing']->format('H:i:s'), 'sched'=> $schedForToday['timeStart'],
+                                        //  'lateOUT'=>$isEarlyOUT, 'user2'=>$userLogOUT[0]['timing']->format('H:i:s'), 'sched2'=> $schedForToday['timeEnd'] ]);
+
+                                        if ($isEarlyOUT && $isLateIN)//use user's logs
+                                        {
+
+                                          $wh = Carbon::parse($userLogOUT[0]['timing'])->diffInMinutes(Carbon::parse($userLogIN[0]['timing'])->addHour());
+                                          $workedHours = number_format($wh/60,2);
+                                          $billableForOT=0;
+                                          
+
+                                        }
+                                        else if ($isEarlyOUT){
+                                          $wh = Carbon::parse($userLogOUT[0]['timing'])->diffInMinutes(Carbon::parse($schedForToday['timeStart'])->addHour());
+                                          $workedHours = number_format($wh/60,2)."<br/><small>(early OUT)</small>";$billableForOT=0;
+                                        }
+                                        else if ($isLateIN){
+                                          $wh = Carbon::parse($userLogOUT[0]['timing'])->diffInMinutes(Carbon::parse($userLogIN[0]['timing'])->addHour());
+                                          $workedHours = number_format($wh/60,2)."<br/><small>(Late IN)</small>";$billableForOT=0;
+                                        }
+                                        else {
+
+                                           $wh = Carbon::parse($userLogOUT[0]['timing'])->diffInMinutes(Carbon::parse($schedForToday['timeStart'])->addHour());
+
+                                          if ($wh > 480){ $workedHours = 8.0; $billableForOT = number_format((Carbon::parse($shiftEnd)->diffInMinutes(Carbon::parse($userLogOUT[0]['timing']) ))/60,2);  }
+                                          else { $workedHours = number_format($wh/60,2)."else"; }
+                                          
+
+                                        }
+
+
+                                      
+
+                                        
+
+                                        
+
+                                        //$coll->push(['wh'=>$wh, 'timeStart'=>$schedForToday['timeStart'], 'end'=>$userLogOUT[0]['timing'], 'logsIN'=>$userLogIN[0]['logs'] ]);
+                                      } 
+                                      else
+                                      {
+                                        $workedHours = "<strong class=\"text-danger\">AWOL</strong>";
+                                      }
+                                      //*********** APPLICABLE ONLY TO WORK DAY ********************//
+
+
+                                  
+
+
+                                  } //--- else not sameDayLog
+
+
+                                     //$coll->push(['userLogIN'=>$userLogIN, 'userLogOUT'=>$userLogOUT, 'wh'=> $wh]);
+
+                                     $myDTR->push(['productionDate'=> date('M d, Y', strtotime($payday)),
+                                     'day'=> date('D',strtotime($payday)),
+                                     //'numDay'=>$numDay,
+                                     //'RD'=> $isRD,
+                                     'shiftStart'=> $shiftStart,
+                                     'shiftEnd'=>$shiftEnd,
+                                     'logIN' => $userLogIN[0]['logTxt'],
+                                     'logOUT'=>$userLogOUT[0]['logTxt']."<br/><small>".$bioForTomorrow->productionDate."</small>",
+                                     'workedHours'=> $workedHours,
+                                     'billableForOT' => $billableForOT,
+                                     'UT'=>$userLogOUT[0]['UT'],
+                                     'approvedOT' => $approvedOT]);
+                                   
+
+                                  
+
+
+                              }//end else WORK DAY
+
+                        
+
+
+
+
+                        }//END SHIFTING SCHED
+--------------------------------
+
+
+<!-- if($noWorkSched) 
+                                                    <tr> <td colspan='9' class="text-center">
+                                                    <h3 class="text-center text-primary"><br/><br/><i class="fa fa-clock-o"></i>&nbsp;&nbsp; No Work Schedule defined</h3><p class="text-center"><small>Kindly inform HR or immediate head to plot {{$user->firstname}}'s  work schedule.</small><br/><br/><br/>
+                                                    <a href="{{action('UserController@createSchedule', $user->id)}}" class="btn btn-md btn-success"><i class="fa fa-calendar"></i> Plot Schedule Now</a></p>
+                                                    </td>
+                                                    </tr>-->
+
+
+//return $workSched;
+         
+         if ($isFixedSched)
+         {
+            foreach($payrollPeriod as $payP)
+             {
+                //$schedForToday = $workSched->where('productionDate', $payP)->all();
+                $day = date('D', strtotime($payP));
+                $theday = (string)$day;
+                $numDay = array_search($theday, $daysOfWeek);
+                $prevNumDay = array_search($theday-1, $daysOfWeek);
+                
+                $schedForToday = $workSched->where('workday',$numDay)->first();
+                //$RDschedForYesterday = $RDsched->where('workday',$numDay)
+                
+
+                if ( is_null($schedForToday) ) //*** for some reason, i dunno bakit null at hindi 1
+                { 
+                    $isRD = 1;$shiftStart = "Restday"; $shiftEnd = "Restday"; $logIN="Restday"; $logOUT="Restday"; $checkNight=null;
+                } else 
+                {
+                    $shiftStart = date('h:i A',strtotime($schedForToday['timeStart']));
+                    $checkNight = date('H:i:s',strtotime($schedForToday['timeStart']));
+                    $shiftEnd = date('h:i A',strtotime($schedForToday['timeEnd']));
+                    $isRD = 0;
+                }
+                //$logOUT="?";
+                //if($isRD) {$ };
+
+                //---  now get Biometrics log
+
+                $bioForTheDay = Biometrics::where('productionDate',$payP)->first();
+               
+
+
+                if( is_null($bioForTheDay) )
+                {
+                    $logIN = "<strong class=\"text-success\">No <br/>Biometrics</strong>";
+                    $logOUT = "<strong class=\"text-success\">No <br/>Biometrics</strong>";
+                    $workedHours = 'N/A';
+                    $billableForOT = 0;
+
+
+                } else if(!$isRD)
+                {
+                    $userLog = Logs::where('user_id',$id)->where('biometrics_id',$bioForTheDay->id)->orderBy('id','ASC')->get();
+                    $approvedOT = 0;
+
+                    if(count($userLog) > 0){
+
+                        //--- we need to check first kung pang night shift sya
+                        //--- if sched is (3pm-12am) -> logOut is workSched+1
+                        $panggabi = date('H:i:s',strtotime('15:00:00'));
+                        $earlyShift = date('H:i:s',strtotime('24:00:00'));
+
+                        if($checkNight >= $panggabi ) 
+                        { 
+                            $nightShift = "yes";
+                            $nextDayBio = Carbon::parse($payP)->addDay();
+                            $bioForTheNextDay = Biometrics::where('productionDate',$nextDayBio->format('Y-m-d'))->first();
+                           
+                            if (!is_null($bioForTheNextDay))
+                            {
+                                $userLog2 = Logs::where('user_id',$id)->where('biometrics_id',$bioForTheNextDay->id)->orderBy('id','ASC')->get();
+
+                                if (count($userLog2) > 0){
+                                    //return count($userLog2);
+                                    $OUT = $userLog2->where('logType_id',2)->sortBy('id')->pluck('logTime')->first();
+                                }  else $OUT = null;
+                            }else $OUT = null;
+                            
+                            
+
+                            $IN = $userLog->where('logType_id',1)->pluck('logTime')->first();
+                            
+
+                        }  else if ($checkNight <= $earlyShift)
+                        { 
+                            $nightShift = "yes";
+                            // *** ang IN nya dapat kahapon
+                            $prevDayBio = Carbon::parse($payP)->subDay();
+                            $bioForThePrevDay = Biometrics::where('productionDate',$prevDayBio->format('Y-m-d'))->first();
+                            if (!is_null($bioForThePrevDay))
+                            {
+                                $userLog2 = Logs::where('user_id',$id)->where('biometrics_id',$bioForThePrevDay->id)->orderBy('id','ASC')->get();
+
+                                $IN = $userLog2->where('logType_id',1)->sortBy('id')->pluck('logTime')->first();
+                               
+                            
+
+                            }else
+                            {
+                                $logOUT ="No Data";
+                                $logIN = "No Data";
+                                $IN = null; $OUT = $userLog->where('logType_id',2)->pluck('logTime')->first();
+
+                            }
+
+                            
+
+                        } else
+                        {
+                            $nightShift="no";
+                            $IN = $userLog->where('logType_id',1)->pluck('logTime')->first();
+                            $OUT = $userLog->where('logType_id',2)->pluck('logTime')->first();
+                        } 
+
+                        
+                        
+                        $coll->push(['checkNight'=>$checkNight,'earlyShift'=>$earlyShift, 'userLog'=>$userLog, 'in'=>$IN, 'out'=>$OUT]);
+
+
+                        
+
+                        if(($IN !== null) && ($OUT !== null))
+                        {
+                            $timeStart = Carbon::parse($IN);
+                            $timeEnd = Carbon::parse($OUT); 
+                            $logIN = date('h:i A',strtotime($IN));
+                            $logOUT = date('h:i A',strtotime($OUT));
+
+                            $wh = $timeEnd->diffInMinutes($timeStart->addHour());
+
+                            // --- check if this is RD OT
+                            if ($isRD == 1){
+                                $workedHours = number_format($wh/60,2);
+                                $billableForOT = $workedHours;
+
+                            }else{
+                                if ($wh >= 8){ $workedHours = 8.0; $billableForOT = number_format((Carbon::parse($shiftEnd)->diffInMinutes($timeEnd))/60,2);  }
+                                else { $workedHours = number_format($wh,2); }
+                            }
+                        } else {
+
+                            //--- Kung wala syang IN at hindi naman nya RD
+                            if(is_null($IN) && !$isRD) {$logIN="No IN"; $workedHours = 'N/A'; $billableForOT=0;} 
+
+                            //--- KUng walang OUT at hindi naman RD
+                            if(is_null($OUT) && !$isRD) {$logOUT="<strong class=\"text-danger\">No OUT</strong>"; $workedHours = 'N/A'; $billableForOT=0;}
+
+                            //--- I dunno kung anong kaso
+                            else {$workedHours="N/A"; $billableForOT="0";}
+                        }
+
+                        
+                        
+                         
+
+                    } else
+                    {
+
+                        //check mo kung RD nya, or else absent sya
+                        if($isRD){
+                            $logIN="Restday"; $logOUT="Restday";$workedHours = "N/A";$billableForOT = 0;
+
+                        }else //PERO syempre, may module dapat to check kung may filed LEAVE form sya or wala
+                              //else AWOL talaga
+                        {
+                            $logIN = "<strong> AWOL </strong>";
+                            $logOUT = "<strong> AWOL </strong> ";
+                            $workedHours = 0;
+                            $billableForOT = 0;
+
+                        }
+                        
+                    }
+
+            
+
+
+                }
+
+               
+                 $myDTR->push(['productionDate'=> date('M d, Y', strtotime($payP)),
+                 'day'=> date('D',strtotime($payP)),
+                 'numDay'=>$numDay,
+                 'RD'=> $isRD,
+                 'shiftStart'=> $shiftStart,
+                 'shiftEnd'=>$shiftEnd,
+                 'nightShift'=> $nightShift,
+                 'panggabi'=>$panggabi,
+                 'logIN' => $logIN,
+                 'logOUT'=>$logOUT,
+                 'workedHours'=> $workedHours,
+                 'billableForOT' => $billableForOT,
+                 'approvedOT' => $approvedOT]);
+
+            }//end foreach
+          } //end fixed schedule
+
+         else 
+         //********************** SHIFTING SCHED
+         {
+
+         }

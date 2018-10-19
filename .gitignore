@@ -1,0 +1,15 @@
+/vendor
+/node_modules
+/public/build/changes.txt
+/public/build/log.txt
+/public/storage
+/public/img/employees
+/public/img/cover
+/public/img/credit
+Homestead.yaml
+Homestead.json
+.env
+/config
+/database/seeds
+/storage/uploads
+/tests
